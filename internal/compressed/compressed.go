@@ -2,7 +2,6 @@ package compressed
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
@@ -13,137 +12,146 @@ import (
 	"image-compressions/request"
 	"image/jpeg"
 	"os"
+	"os/signal"
 	"path"
 	"strings"
-	"sync"
+	"syscall"
 )
 
-func ConsumerProcessing(logger *logrus.Logger, deliveryChan <-chan amqp.Delivery, cfg *config.Configurations) {
+type Consumer struct {
+	logger   *logrus.Logger
+	delivery <-chan amqp.Delivery
+}
+
+func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery) *Consumer {
+	return &Consumer{
+		logger:   logger,
+		delivery: delivery,
+	}
+}
+
+func (c *Consumer) Listen(cfg *config.Configurations) {
+	c.logger.Printf(" [*] Waiting for messages. To exit press CTRL+C \n")
+	shutDownListener := make(chan os.Signal, 1)
+	signal.Notify(shutDownListener, syscall.SIGINT, syscall.SIGTERM)
+	for {
+		select {
+		case sig := <-shutDownListener:
+			c.logger.Printf("shutdown requested signal: %s \n", sig.String())
+			return
+		case msg, ok := <-c.delivery:
+			if !ok {
+				c.logger.Printf("consumer is closed")
+				return
+			}
+			go c.consume(msg, cfg)
+		}
+	}
+}
+
+func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	var (
 		imageFile  string
 		outputPath string
 		payload    request.DiscordRequest
 	)
 
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithCancel(context.Background())
+	imageFile = string(msg.Body)
+	readFl := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, imageFile)
 
-	defer func() {
-		cancel()
-		wg.Wait()
-	}()
+	if imageFile == "" {
+		payload.Content = fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		return
+	}
 
-	forever := make(chan bool)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(forever)
+	fileBytes, err := os.ReadFile(readFl)
+	if err != nil {
+		c.logger.Printf("failed to read path file : %v", err)
+		payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		msg.Nack(false, true) //requeue
+		return
+	}
 
-		for {
-			select {
-			case msg, ok := <-deliveryChan:
-				if !ok {
-					return
-				}
-				imageFile = string(msg.Body)
-				readFl := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, imageFile)
+	if len(fileBytes) == 0 {
+		c.logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
+		payload.Content = fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		return
+	}
 
-				if imageFile == "" {
-					payload.Content = fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					continue
-				}
+	fileImage, isConv, err := helper.ToJpeg(fileBytes)
+	if err != nil {
+		c.logger.Printf("convert image got error %v", err)
+		payload.Content = fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		msg.Nack(false, false)
+		return
+	}
 
-				fileBytes, err := os.ReadFile(readFl)
-				if err != nil {
-					logger.Printf("failed to read path file : %v", err)
-					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					msg.Nack(false, true) //requeue
-					continue
-				}
+	c.logger.Println("Image conversion successfully!")
 
-				if len(fileBytes) == 0 {
-					logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
-					payload.Content = fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					continue
-				}
+	img, _, err := image.Decode(bytes.NewReader(fileImage))
+	if err != nil {
+		c.logger.Printf("Error decoding the image: %v", err)
+		payload.Content = fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		msg.Nack(false, false)
+		return
+	}
 
-				fileImage, isConv, err := helper.ToJpeg(fileBytes)
-				if err != nil {
-					logger.Printf("convert image got error %v", err)
-					payload.Content = fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					msg.Ack(false)
-					continue
-				}
+	outputImage := determineOutputImage(imageFile, isConv)
 
-				logger.Println("Image conversion successfully!")
+	baseFile := path.Base(outputImage)
+	prefix := strings.Trim(outputImage, baseFile)
+	newPath := strings.TrimLeft(baseFile, cfg.ImageSetting.PathOriginalFile)
+	dirOutput := checkSubDirectory(
+		cfg.ImageSetting.SubPathOriginalInvtrypht,
+		cfg.ImageSetting.SubPathCompressionInvtrypht,
+		cfg.ImageSetting.SubPathOriginalAdjdmgpht,
+		cfg.ImageSetting.SubPathCompressionAdjdmgpht,
+		prefix,
+	)
 
-				img, _, err := image.Decode(bytes.NewReader(fileImage))
-				if err != nil {
-					logger.Printf("Error decoding the image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					msg.Nack(false, true)
-					continue
-				}
+	outputPath = fmt.Sprintf("%s/%s/%s", cfg.ImageSetting.PathCompressed, dirOutput, newPath)
 
-				outputImage := determineOutputImage(imageFile, isConv)
+	output, err := os.Create(outputPath)
+	if err != nil {
+		c.logger.Printf("Error creating the output image: %v", err)
+		payload.Content = fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		msg.Nack(false, true)
+		return
+	}
 
-				baseFile := path.Base(outputImage)
-				prefix := strings.Trim(outputImage, baseFile)
-				newPath := strings.TrimLeft(baseFile, cfg.ImageSetting.PathOriginalFile)
-				dirOutput := checkSubDirectory(
-					cfg.ImageSetting.SubPathOriginalInvtrypht,
-					cfg.ImageSetting.SubPathCompressionInvtrypht,
-					cfg.ImageSetting.SubPathOriginalAdjdmgpht,
-					cfg.ImageSetting.SubPathCompressionAdjdmgpht,
-					prefix,
-				)
+	//Todo: Handle unique filename if needed to ensure not replace same filename
 
-				outputPath = fmt.Sprintf("%s/%s/%s", cfg.ImageSetting.PathCompressed, dirOutput, newPath)
+	// Encode the image as JPEG with compression options
+	jpegOptions := jpeg.Options{Quality: cfg.ImageSetting.Quality}
 
-				output, err := os.Create(outputPath)
-				if err != nil {
-					logger.Printf("Error creating the output image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					msg.Nack(false, true)
-					continue
-				}
+	err = jpeg.Encode(output, img, &jpegOptions)
+	if err != nil {
+		c.logger.Printf("Error encoding the image: %v", err)
+		payload.Content = fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output)
+		c.logAndNotifyError(cfg.Discord.Url, payload)
+		msg.Nack(false, true)
+		return
+	}
 
-				//Todo: Handle unique filename if needed to ensure not replace same filename
+	output.Close()
 
-				// Encode the image as JPEG with compression options
-				jpegOptions := jpeg.Options{Quality: cfg.ImageSetting.Quality}
+	logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
+	logrus.WithFields(logrus.Fields{"server": cfg.Server.Name}).Info("Successfully uploaded file!")
 
-				err = jpeg.Encode(output, img, &jpegOptions)
-				if err != nil {
-					logger.Printf("Error encoding the image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output)
-					logAndNotifyError(logger, cfg.Discord.Url, payload)
-					msg.Nack(false, true)
-					continue
-				}
+	msg.Ack(true)
+}
 
-				output.Close()
-
-				logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
-				logrus.WithFields(logrus.Fields{
-					"server": cfg.Server.Name,
-				}).Info("Successfully uploaded file!")
-
-			case <-ctx.Done():
-				return // context canceled, exit goroutine
-			}
-		}
-	}()
-
-	logger.Printf(" [*] Waiting for messages. To exit press CTRL+C")
-
-	<-forever
+func (c *Consumer) logAndNotifyError(urlDiscord string, payload request.DiscordRequest) {
+	errConnector := connector.LogDiscord(c.logger, urlDiscord, payload)
+	if errConnector != nil {
+		c.logger.Printf("Error sending request to discord bot: %v", errConnector)
+	}
 }
 
 func determineOutputImage(fileImage string, isConvert bool) string {
@@ -160,11 +168,4 @@ func checkSubDirectory(subOriInv, subCompInv, subOriAdj, subCompAdj, prefix stri
 		return subCompAdj
 	}
 	return prefix
-}
-
-func logAndNotifyError(logger *logrus.Logger, urlDiscord string, payload request.DiscordRequest) {
-	errConnector := connector.LogDiscord(logger, urlDiscord, payload)
-	if errConnector != nil {
-		logger.Printf("Error sending request to Discord bot: %v", errConnector)
-	}
 }

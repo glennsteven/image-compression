@@ -26,12 +26,17 @@ func Start() error {
 		}
 	}()
 
-	delivery, _, _, err := rabbitmq.Consumer(cfg.RabbitMq)
+	delivery, conn, err := rabbitmq.Consumer(cfg.RabbitMq)
 	if err != nil {
 		return fmt.Errorf("consumer rabbit failed running: %w", err)
 	}
 
-	compressed.ConsumerProcessing(logger, delivery, cfg)
+	defer func() {
+		conn.Close()
+	}()
+
+	consumer := compressed.NewConsumer(logger, delivery)
+	consumer.Listen(cfg)
 
 	return nil
 }
