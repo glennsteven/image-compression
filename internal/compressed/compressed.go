@@ -2,6 +2,7 @@ package compressed
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
@@ -9,24 +10,26 @@ import (
 	"image-compressions/internal/config"
 	"image-compressions/internal/connector"
 	"image-compressions/pkg/helper"
-	"image-compressions/request"
 	"image/jpeg"
 	"os"
 	"os/signal"
 	"path"
 	"strings"
 	"syscall"
+	"time"
 )
 
 type Consumer struct {
 	logger   *logrus.Logger
 	delivery <-chan amqp.Delivery
+	alerting connector.Alerting
 }
 
-func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery) *Consumer {
+func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery, alerting connector.Alerting) *Consumer {
 	return &Consumer{
 		logger:   logger,
 		delivery: delivery,
+		alerting: alerting,
 	}
 }
 
@@ -53,39 +56,34 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	var (
 		imageFile  string
 		outputPath string
-		payload    request.DiscordRequest
 	)
 
 	imageFile = string(msg.Body)
 	readFl := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, imageFile)
 
 	if imageFile == "" {
-		payload.Content = fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name))
 		return
 	}
 
 	fileBytes, err := os.ReadFile(readFl)
 	if err != nil {
 		c.logger.Printf("failed to read path file : %v", err)
-		payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile))
 		msg.Nack(false, true) //requeue
 		return
 	}
 
 	if len(fileBytes) == 0 {
 		c.logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
-		payload.Content = fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes)))
 		return
 	}
 
 	fileImage, isConv, err := helper.ToJpeg(fileBytes)
 	if err != nil {
 		c.logger.Printf("convert image got error %v", err)
-		payload.Content = fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile))
 		msg.Nack(false, false)
 		return
 	}
@@ -95,8 +93,7 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	img, _, err := image.Decode(bytes.NewReader(fileImage))
 	if err != nil {
 		c.logger.Printf("Error decoding the image: %v", err)
-		payload.Content = fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err))
 		msg.Nack(false, false)
 		return
 	}
@@ -119,8 +116,7 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	output, err := os.Create(outputPath)
 	if err != nil {
 		c.logger.Printf("Error creating the output image: %v", err)
-		payload.Content = fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile))
 		msg.Nack(false, true)
 		return
 	}
@@ -133,8 +129,7 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	err = jpeg.Encode(output, img, &jpegOptions)
 	if err != nil {
 		c.logger.Printf("Error encoding the image: %v", err)
-		payload.Content = fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output)
-		c.logAndNotifyError(cfg.Discord.Url, payload)
+		c.logAndNotifyError(fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output))
 		msg.Nack(false, true)
 		return
 	}
@@ -147,8 +142,11 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	msg.Ack(true)
 }
 
-func (c *Consumer) logAndNotifyError(urlDiscord string, payload request.DiscordRequest) {
-	errConnector := connector.LogDiscord(c.logger, urlDiscord, payload)
+func (c *Consumer) logAndNotifyError(text string) {
+	c.logger.Println("[logAndNotifyError] ", text)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errConnector := c.alerting.SendAlert(ctx, text)
 	if errConnector != nil {
 		c.logger.Printf("Error sending request to discord bot: %v", errConnector)
 	}

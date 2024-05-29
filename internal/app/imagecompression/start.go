@@ -5,7 +5,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"image-compressions/internal/compressed"
 	"image-compressions/internal/config"
+	"image-compressions/internal/connector"
 	"image-compressions/pkg/rabbitmq"
+	"net/http"
 )
 
 func Start() error {
@@ -34,8 +36,8 @@ func Start() error {
 	defer func() {
 		conn.Close()
 	}()
-
-	consumer := compressed.NewConsumer(logger, delivery)
+	alerting := connector.NewAlertingDiscord(cfg.Discord, logger, http.DefaultClient)
+	consumer := compressed.NewConsumer(logger, delivery, alerting)
 	consumer.Listen(cfg)
 
 	return nil
