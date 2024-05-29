@@ -14,7 +14,11 @@ func Start() error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	logger := config.NewLogger(cfg.Logger)
+	logger, err := config.NewLogger(cfg.Logger)
+	if err != nil {
+		return fmt.Errorf("failed to create logger: %w", err)
+	}
+
 	logger.Info("Compressed service already running")
 	defer func() {
 		if r := recover(); r != nil {

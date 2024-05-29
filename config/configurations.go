@@ -39,7 +39,7 @@ type Config struct {
 }
 
 type Logger struct {
-	Level int32
+	Level string
 }
 
 func Load() (*Config, error) {
@@ -72,7 +72,7 @@ func Load() (*Config, error) {
 			Quality: v.GetInt("QUALITY_COMPRESS"),
 		},
 		Logger: Logger{
-			v.GetInt32("LOG_LEVEL"),
+			v.GetString("LOG_LEVEL"),
 		},
 	}
 
