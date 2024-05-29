@@ -2,14 +2,13 @@ package config
 
 import (
 	"github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
 	"image-compressions/consts"
 )
 
-func NewLogger(viper *viper.Viper) *logrus.Logger {
+func NewLogger(cfg Logger) *logrus.Logger {
 	logger := logrus.New()
 
-	level := logrus.Level(viper.GetInt32("LOG_LEVEL"))
+	level := logrus.Level(cfg.Level)
 	logger.SetLevel(level)
 
 	formatter := &logrus.TextFormatter{
