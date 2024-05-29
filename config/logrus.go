@@ -22,6 +22,5 @@ func NewLogger(viper *viper.Viper) *logrus.Logger {
 	logger.SetFormatter(formatter)
 
 	logger.WithField("level", level.String()).Info("Logger initialized")
-
 	return logger
 }
