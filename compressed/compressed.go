@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"image"
-	"image-compressions/config"
 	"image-compressions/connector"
 	"image-compressions/consts"
 	"image-compressions/helper"
+	"image-compressions/internal/config"
 	"image-compressions/pkg"
 	"image-compressions/request"
 	"image/jpeg"
@@ -19,7 +19,7 @@ import (
 	"sync"
 )
 
-func ConsumerProcessing(logger *logrus.Logger, cfg config.Configurations) {
+func ConsumerProcessing(logger *logrus.Logger, cfg *config.Configurations) {
 	var (
 		imageFile  string
 		outputPath string
