@@ -7,19 +7,16 @@ import (
 )
 
 func GlobalConfig() (*viper.Viper, error) {
-	config := viper.New()
-
+	// Set the absolute path to the .env file in the Viper configuration.
 	currentDir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
 
-	// Construct the absolute path to the .env file.
 	envFilePath := filepath.Join(currentDir, ".env")
 
-	// Set the absolute path to the .env file in the Viper configuration.
+	config := viper.New()
 	config.SetConfigFile(envFilePath)
-
 	config.SetDefault("APP_PORT", 8000)
 
 	err = config.ReadInConfig()

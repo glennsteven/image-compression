@@ -1,11 +1,19 @@
-package pkg
+package rabbitmq
 
 import (
 	"fmt"
 	"github.com/streadway/amqp"
 )
 
-func connectionRabbit(config RabbitMQConfig) (*amqp.Connection, error) {
+type Config struct {
+	Username string
+	Password string
+	Port     string
+	Host     string
+	Topic    string
+}
+
+func connectionRabbit(config Config) (*amqp.Connection, error) {
 	url := fmt.Sprintf("amqp://%s:%s@%s:%s/", config.Username, config.Password, config.Host, config.Port)
 	conn, err := amqp.Dial(url)
 	return conn, err
@@ -25,16 +33,15 @@ func setupChannel(conn *amqp.Connection, topic string) (*amqp.Channel, <-chan am
 	return ch, msgs, nil
 }
 
-func Consumer(config RabbitMQConfig, topic string) (<-chan amqp.Delivery, *amqp.Connection, *amqp.Channel, error) {
-	conn, err := connectionRabbit(config)
+func Consumer(cfg Config) (<-chan amqp.Delivery, *amqp.Connection, error) {
+	conn, err := connectionRabbit(cfg)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	ch, msgs, err := setupChannel(conn, topic)
+	_, msgs, err := setupChannel(conn, cfg.Topic)
 	if err != nil {
-		conn.Close()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	bidirectionalMsgs := make(chan amqp.Delivery)
@@ -45,21 +52,5 @@ func Consumer(config RabbitMQConfig, topic string) (<-chan amqp.Delivery, *amqp.
 		}
 	}()
 
-	return bidirectionalMsgs, conn, ch, nil
-}
-
-type RabbitMQConfig struct {
-	Username string
-	Password string
-	Port     string
-	Host     string
-}
-
-func NewRabbitMQConfig(username, password, port, host string) RabbitMQConfig {
-	return RabbitMQConfig{
-		Username: username,
-		Password: password,
-		Port:     port,
-		Host:     host,
-	}
+	return bidirectionalMsgs, conn, nil
 }
