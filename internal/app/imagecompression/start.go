@@ -3,8 +3,9 @@ package imagecompression
 import (
 	"fmt"
 	"github.com/sirupsen/logrus"
-	"image-compressions/compressed"
+	"image-compressions/internal/compressed"
 	"image-compressions/internal/config"
+	"image-compressions/pkg/rabbitmq"
 )
 
 func Start() error {
@@ -25,7 +26,12 @@ func Start() error {
 		}
 	}()
 
-	compressed.ConsumerProcessing(logger, cfg)
+	delivery, _, _, err := rabbitmq.Consumer(cfg.RabbitMq)
+	if err != nil {
+		return fmt.Errorf("consumer rabbit failed running: %w", err)
+	}
+
+	compressed.ConsumerProcessing(logger, delivery, cfg)
 
 	return nil
 }

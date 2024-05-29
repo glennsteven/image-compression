@@ -5,12 +5,11 @@ import (
 	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"github.com/streadway/amqp"
 	"image"
-	"image-compressions/connector"
-	"image-compressions/consts"
-	"image-compressions/helper"
 	"image-compressions/internal/config"
-	"image-compressions/pkg"
+	"image-compressions/internal/connector"
+	"image-compressions/pkg/helper"
 	"image-compressions/request"
 	"image/jpeg"
 	"os"
@@ -19,19 +18,12 @@ import (
 	"sync"
 )
 
-func ConsumerProcessing(logger *logrus.Logger, cfg *config.Configurations) {
+func ConsumerProcessing(logger *logrus.Logger, deliveryChan <-chan amqp.Delivery, cfg *config.Configurations) {
 	var (
 		imageFile  string
 		outputPath string
 		payload    request.DiscordRequest
 	)
-
-	rabbitMqCfg := pkg.NewRabbitMQConfig(cfg.RabbitMq.Username, cfg.RabbitMq.Password, cfg.RabbitMq.Port, cfg.RabbitMq.Host)
-	msgx, _, _, err := pkg.Consumer(rabbitMqCfg, cfg.RabbitMq.Topic)
-	if err != nil {
-		logger.Printf("%s-consumer rabbit-mq got error: %v", cfg.Server.Name, err)
-		return
-	}
 
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,16 +41,15 @@ func ConsumerProcessing(logger *logrus.Logger, cfg *config.Configurations) {
 
 		for {
 			select {
-			case msg, ok := <-msgx:
+			case msg, ok := <-deliveryChan:
 				if !ok {
 					return
 				}
 				imageFile = string(msg.Body)
-				readFl := fmt.Sprintf("%s/%s", cfg.RabbitMq.PathOriginalFile, imageFile)
+				readFl := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, imageFile)
 
 				if imageFile == "" {
-					logger.Printf("failed to read path file : %v, skip process", err)
-					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s, skip process", cfg.Server.Name, err, imageFile)
+					payload.Content = fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name)
 					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					continue
 				}
@@ -103,16 +94,16 @@ func ConsumerProcessing(logger *logrus.Logger, cfg *config.Configurations) {
 
 				baseFile := path.Base(outputImage)
 				prefix := strings.Trim(outputImage, baseFile)
-				newPath := strings.TrimLeft(baseFile, cfg.RabbitMq.PathOriginalFile)
+				newPath := strings.TrimLeft(baseFile, cfg.ImageSetting.PathOriginalFile)
 				dirOutput := checkSubDirectory(
-					cfg.RabbitMq.SubPathOriginalInvtrypht,
-					cfg.RabbitMq.SubPathCompressionInvtrypht,
-					cfg.RabbitMq.SubPathOriginalAdjdmgpht,
-					cfg.RabbitMq.SubPathCompressionAdjdmgpht,
+					cfg.ImageSetting.SubPathOriginalInvtrypht,
+					cfg.ImageSetting.SubPathCompressionInvtrypht,
+					cfg.ImageSetting.SubPathOriginalAdjdmgpht,
+					cfg.ImageSetting.SubPathCompressionAdjdmgpht,
 					prefix,
 				)
 
-				outputPath = fmt.Sprintf("%s/%s/%s", cfg.RabbitMq.PathCompressed, dirOutput, newPath)
+				outputPath = fmt.Sprintf("%s/%s/%s", cfg.ImageSetting.PathCompressed, dirOutput, newPath)
 
 				output, err := os.Create(outputPath)
 				if err != nil {
@@ -157,7 +148,7 @@ func ConsumerProcessing(logger *logrus.Logger, cfg *config.Configurations) {
 
 func determineOutputImage(fileImage string, isConvert bool) string {
 	if isConvert {
-		return helper.ChangeFileExtension(fileImage, consts.JPEG)
+		return helper.ChangeFileExtension(fileImage, `jpeg`)
 	}
 	return fileImage
 }
