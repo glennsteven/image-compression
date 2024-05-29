@@ -19,17 +19,17 @@ import (
 	"sync"
 )
 
-func ConsumerProcessing(logger *logrus.Logger, cfg config.RabbitMq, cfgDiscord config.Discord, server config.Server, imgSetting config.ImageSetting) {
+func ConsumerProcessing(logger *logrus.Logger, cfg config.Configurations) {
 	var (
 		imageFile  string
 		outputPath string
 		payload    request.DiscordRequest
 	)
 
-	rabbitMqCfg := pkg.NewRabbitMQConfig(cfg.Username, cfg.Password, cfg.Port, cfg.Host)
-	msgx, _, _, err := pkg.Consumer(rabbitMqCfg, cfg.Topic)
+	rabbitMqCfg := pkg.NewRabbitMQConfig(cfg.RabbitMq.Username, cfg.RabbitMq.Password, cfg.RabbitMq.Port, cfg.RabbitMq.Host)
+	msgx, _, _, err := pkg.Consumer(rabbitMqCfg, cfg.RabbitMq.Topic)
 	if err != nil {
-		logger.Printf("%s-consumer rabbit-mq got error: %v", server, err)
+		logger.Printf("%s-consumer rabbit-mq got error: %v", cfg.Server.Name, err)
 		return
 	}
 
@@ -54,36 +54,36 @@ func ConsumerProcessing(logger *logrus.Logger, cfg config.RabbitMq, cfgDiscord c
 					return
 				}
 				imageFile = string(msg.Body)
-				readFl := fmt.Sprintf("%s/%s", cfg.PathOriginalFile, imageFile)
+				readFl := fmt.Sprintf("%s/%s", cfg.RabbitMq.PathOriginalFile, imageFile)
 
 				if imageFile == "" {
 					logger.Printf("failed to read path file : %v, skip process", err)
-					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s, skip process", server, err, imageFile)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s, skip process", cfg.Server.Name, err, imageFile)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					continue
 				}
 
 				fileBytes, err := os.ReadFile(readFl)
 				if err != nil {
 					logger.Printf("failed to read path file : %v", err)
-					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s", server, err, imageFile)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					msg.Nack(false, true) //requeue
 					continue
 				}
 
 				if len(fileBytes) == 0 {
-					logger.Printf("%s-Skip processing file: %s, %v bytes", server, imageFile, len(fileBytes))
-					payload.Content = fmt.Sprintf("%s-Skip processing file: %s, %v bytes", server, imageFile, len(fileBytes))
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
+					payload.Content = fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					continue
 				}
 
 				fileImage, isConv, err := helper.ToJpeg(fileBytes)
 				if err != nil {
 					logger.Printf("convert image got error %v", err)
-					payload.Content = fmt.Sprintf("%s-convert image got error %v, filename %s", server, err, imageFile)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					msg.Ack(false)
 					continue
 				}
@@ -93,8 +93,8 @@ func ConsumerProcessing(logger *logrus.Logger, cfg config.RabbitMq, cfgDiscord c
 				img, _, err := image.Decode(bytes.NewReader(fileImage))
 				if err != nil {
 					logger.Printf("Error decoding the image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error decoding the image: %v", server, err)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					msg.Nack(false, true)
 					continue
 				}
@@ -103,16 +103,22 @@ func ConsumerProcessing(logger *logrus.Logger, cfg config.RabbitMq, cfgDiscord c
 
 				baseFile := path.Base(outputImage)
 				prefix := strings.Trim(outputImage, baseFile)
-				newPath := strings.TrimLeft(baseFile, cfg.PathOriginalFile)
-				dirOutput := checkSubDirectory(cfg.SubPathOriginalInvtrypht, cfg.SubPathCompressionInvtrypht, cfg.SubPathOriginalAdjdmgpht, cfg.SubPathCompressionAdjdmgpht, prefix)
+				newPath := strings.TrimLeft(baseFile, cfg.RabbitMq.PathOriginalFile)
+				dirOutput := checkSubDirectory(
+					cfg.RabbitMq.SubPathOriginalInvtrypht,
+					cfg.RabbitMq.SubPathCompressionInvtrypht,
+					cfg.RabbitMq.SubPathOriginalAdjdmgpht,
+					cfg.RabbitMq.SubPathCompressionAdjdmgpht,
+					prefix,
+				)
 
-				outputPath = fmt.Sprintf("%s/%s/%s", cfg.PathCompressed, dirOutput, newPath)
+				outputPath = fmt.Sprintf("%s/%s/%s", cfg.RabbitMq.PathCompressed, dirOutput, newPath)
 
 				output, err := os.Create(outputPath)
 				if err != nil {
 					logger.Printf("Error creating the output image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error creating the output image: %v, %s", server, err, baseFile)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					msg.Nack(false, true)
 					continue
 				}
@@ -120,22 +126,22 @@ func ConsumerProcessing(logger *logrus.Logger, cfg config.RabbitMq, cfgDiscord c
 				//Todo: Handle unique filename if needed to ensure not replace same filename
 
 				// Encode the image as JPEG with compression options
-				jpegOptions := jpeg.Options{Quality: imgSetting.Quality}
+				jpegOptions := jpeg.Options{Quality: cfg.ImageSetting.Quality}
 
 				err = jpeg.Encode(output, img, &jpegOptions)
 				if err != nil {
 					logger.Printf("Error encoding the image: %v", err)
-					payload.Content = fmt.Sprintf("%s-Error encoding the image: %v,%v", server, err, output)
-					logAndNotifyError(logger, cfgDiscord.Url, payload)
+					payload.Content = fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output)
+					logAndNotifyError(logger, cfg.Discord.Url, payload)
 					msg.Nack(false, true)
 					continue
 				}
 
 				output.Close()
 
-				logrus.Infof("%s-Image compressed and saved in %s\n", server, outputPath)
+				logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
 				logrus.WithFields(logrus.Fields{
-					"server": server.Name,
+					"server": cfg.Server.Name,
 				}).Info("Successfully uploaded file!")
 
 			case <-ctx.Done():

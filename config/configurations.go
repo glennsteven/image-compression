@@ -1,5 +1,12 @@
 package config
 
+type Configurations struct {
+	RabbitMq     RabbitMq
+	Discord      Discord
+	Server       Server
+	ImageSetting ImageSetting
+}
+
 type RabbitMq struct {
 	Username                    string
 	Password                    string
