@@ -37,19 +37,23 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 	c.logger.Printf(" [*] Waiting for messages. To exit press CTRL+C \n")
 	shutDownListener := make(chan os.Signal, 1)
 	signal.Notify(shutDownListener, syscall.SIGINT, syscall.SIGTERM)
-	for {
-		select {
-		case sig := <-shutDownListener:
-			c.logger.Printf("shutdown requested signal: %s \n", sig.String())
-			return
-		case msg, ok := <-c.delivery:
-			if !ok {
-				c.logger.Printf("consumer is closed")
+	forever := make(chan bool)
+	go func() {
+		for {
+			select {
+			case sig := <-shutDownListener:
+				c.logger.Printf("shutdown requested signal: %s \n", sig.String())
 				return
+			case msg, ok := <-c.delivery:
+				if !ok {
+					c.logger.Printf("consumer is closed")
+					return
+				}
+				go c.consume(msg, cfg)
 			}
-			go c.consume(msg, cfg)
 		}
-	}
+	}()
+	<-forever
 }
 
 func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
