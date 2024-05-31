@@ -38,6 +38,7 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 	shutDownListener := make(chan os.Signal, 1)
 	signal.Notify(shutDownListener, syscall.SIGINT, syscall.SIGTERM)
 	forever := make(chan bool)
+	defer close(forever)
 	go func() {
 		for {
 			select {
@@ -49,7 +50,7 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 					c.logger.Printf("consumer is closed")
 					return
 				}
-				go c.consume(msg, cfg)
+				c.consume(msg, cfg)
 			}
 		}
 	}()
