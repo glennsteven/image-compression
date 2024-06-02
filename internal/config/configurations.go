@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"image-compressions/pkg/rabbitmq"
 )
 
 func Load() (*Configurations, error) {
@@ -12,7 +11,7 @@ func Load() (*Configurations, error) {
 	}
 
 	cfg := Configurations{
-		RabbitMq: rabbitmq.Config{
+		Rabbitmq: Rabbitmq{
 			Username: v.GetString("RABBITMQ_USERNAME"),
 			Password: v.GetString("RABBITMQ_PASSWORD"),
 			Port:     v.GetString("RABBITMQ_PORT"),
@@ -43,11 +42,19 @@ func Load() (*Configurations, error) {
 }
 
 type Configurations struct {
-	RabbitMq     rabbitmq.Config
+	Rabbitmq     Rabbitmq
 	Discord      Discord
 	Server       Server
 	ImageSetting ImageSetting
 	Logger       Logger
+}
+
+type Rabbitmq struct {
+	Username string
+	Password string
+	Port     string
+	Host     string
+	Topic    string
 }
 
 type Discord struct {

@@ -3,18 +3,11 @@ package rabbitmq
 import (
 	"fmt"
 	"github.com/streadway/amqp"
+	"image-compressions/internal/config"
 )
 
-type Config struct {
-	Username string
-	Password string
-	Port     string
-	Host     string
-	Topic    string
-}
-
-func connectionRabbit(config Config) (*amqp.Connection, error) {
-	url := fmt.Sprintf("amqp://%s:%s@%s:%s/", config.Username, config.Password, config.Host, config.Port)
+func connectionRabbit(cfg *config.Configurations) (*amqp.Connection, error) {
+	url := fmt.Sprintf("amqp://%s:%s@%s:%s/", cfg.Rabbitmq.Username, cfg.Rabbitmq.Password, cfg.Rabbitmq.Host, cfg.Rabbitmq.Port)
 	conn, err := amqp.Dial(url)
 	return conn, err
 }
@@ -33,13 +26,13 @@ func setupChannel(conn *amqp.Connection, topic string) (*amqp.Channel, <-chan am
 	return ch, msgs, nil
 }
 
-func Consumer(cfg Config) (<-chan amqp.Delivery, *amqp.Connection, error) {
+func Consumer(cfg *config.Configurations) (<-chan amqp.Delivery, *amqp.Connection, error) {
 	conn, err := connectionRabbit(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	_, msgs, err := setupChannel(conn, cfg.Topic)
+	_, msgs, err := setupChannel(conn, cfg.Rabbitmq.Topic)
 	if err != nil {
 		return nil, nil, err
 	}

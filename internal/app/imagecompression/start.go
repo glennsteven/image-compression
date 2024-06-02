@@ -28,7 +28,7 @@ func Start() error {
 		}
 	}()
 
-	delivery, conn, err := rabbitmq.Consumer(cfg.RabbitMq)
+	delivery, conn, err := rabbitmq.Consumer(cfg)
 	if err != nil {
 		return fmt.Errorf("consumer rabbit failed running: %w", err)
 	}

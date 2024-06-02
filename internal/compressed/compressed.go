@@ -138,8 +138,6 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 
 	logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
 	logrus.WithFields(logrus.Fields{"server": cfg.Server.Name}).Info("Successfully uploaded file!")
-
-	msg.Ack(true)
 }
 
 func (c *Consumer) logAndNotifyError(text string) {
