@@ -3,12 +3,14 @@ package compressed
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.com/streadway/amqp"
 	"image"
 	"image-compressions/internal/config"
 	"image-compressions/internal/connector"
+	"image-compressions/internal/request"
 	"image-compressions/pkg/helper"
 	"image/jpeg"
 	"os"
@@ -18,6 +20,12 @@ import (
 	"syscall"
 	"time"
 )
+
+var backoffSchedule = []time.Duration{
+	1 * time.Second,
+	3 * time.Second,
+	10 * time.Second,
+}
 
 type Consumer struct {
 	logger   *logrus.Logger
@@ -45,7 +53,7 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 		case msg, ok := <-c.delivery:
 			if !ok {
 				c.logger.Printf("consumer is closed")
-				return
+				continue
 			}
 			go c.consume(msg, cfg)
 		}
@@ -54,36 +62,40 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 
 func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	var (
-		imageFile  string
 		outputPath string
+		req        request.ConsumerRequest
 	)
 
-	imageFile = string(msg.Body)
-	readFl := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, imageFile)
-
-	if imageFile == "" {
-		c.logAndNotifyError(fmt.Sprintf("cannot found image : %v, server config: %s, skip process", imageFile, cfg.Server.Name))
+	err := json.Unmarshal(msg.Body, &req)
+	if err != nil {
+		c.logger.Printf("cannot unmarshal request : %q", err)
 		return
 	}
 
-	fileBytes, err := os.ReadFile(readFl)
+	readFile := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, req.FileName)
+
+	if req.FileName == "" {
+		c.logAndNotifyError(fmt.Sprintf("cannot found image : %v, server config: %s, skip process", req.FileName, cfg.Server.Name))
+		return
+	}
+
+	fileBytes, err := c.readFileRetries(readFile)
 	if err != nil {
 		c.logger.Printf("failed to read path file : %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, imageFile))
-		msg.Nack(false, true) //requeue
+		c.logAndNotifyError(fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, req.FileName))
 		return
 	}
 
 	if len(fileBytes) == 0 {
-		c.logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes))
-		c.logAndNotifyError(fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, imageFile, len(fileBytes)))
+		c.logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, req.FileName, len(fileBytes))
+		c.logAndNotifyError(fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, req.FileName, len(fileBytes)))
 		return
 	}
 
 	fileImage, isConv, err := helper.ToJpeg(fileBytes)
 	if err != nil {
 		c.logger.Printf("convert image got error %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, imageFile))
+		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, req.FileName))
 		msg.Nack(false, false)
 		return
 	}
@@ -98,7 +110,7 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 		return
 	}
 
-	outputImage := determineOutputImage(imageFile, isConv)
+	outputImage := determineOutputImage(req.FileName, isConv)
 
 	baseFile := path.Base(outputImage)
 	prefix := strings.Trim(outputImage, baseFile)
@@ -164,4 +176,25 @@ func checkSubDirectory(subOriInv, subCompInv, subOriAdj, subCompAdj, prefix stri
 		return subCompAdj
 	}
 	return prefix
+}
+
+func (c *Consumer) readFileRetries(url string) (fileBytes []byte, err error) {
+	for _, backoff := range backoffSchedule {
+		fileBytes, err = os.ReadFile(url)
+
+		if err == nil {
+			break
+		}
+
+		c.logger.Printf("Request error: %+v\n", err)
+		c.logger.Printf("Retrying in %v\n", backoff)
+		time.Sleep(backoff)
+	}
+
+	// All retries failed
+	if err != nil {
+		return nil, err
+	}
+
+	return fileBytes, nil
 }
