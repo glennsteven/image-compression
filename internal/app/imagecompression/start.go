@@ -1,6 +1,7 @@
 package imagecompression
 
 import (
+	"context"
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"image-compressions/internal/compressed"
@@ -27,8 +28,8 @@ func Start() error {
 			logrus.Println("Recovered compress image service. Error:\n", r)
 		}
 	}()
-
-	delivery, conn, err := rabbitmq.Consumer(cfg)
+	ctx := context.Background()
+	delivery, conn, err := rabbitmq.Consumer(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("consumer rabbit failed running: %w", err)
 	}
