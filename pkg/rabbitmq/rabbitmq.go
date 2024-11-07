@@ -1,8 +1,9 @@
 package rabbitmq
 
 import (
+	"context"
 	"fmt"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"image-compressions/internal/config"
 )
 
@@ -12,13 +13,13 @@ func connectionRabbit(cfg *config.Configurations) (*amqp.Connection, error) {
 	return conn, err
 }
 
-func setupChannel(conn *amqp.Connection, topic string) (*amqp.Channel, <-chan amqp.Delivery, error) {
+func setupChannel(ctx context.Context, conn *amqp.Connection, topic string) (*amqp.Channel, <-chan amqp.Delivery, error) {
 	ch, err := conn.Channel()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	msgs, err := ch.Consume(topic, "", true, false, false, false, nil)
+	msgs, err := ch.ConsumeWithContext(ctx, topic, "", true, false, false, false, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -26,13 +27,13 @@ func setupChannel(conn *amqp.Connection, topic string) (*amqp.Channel, <-chan am
 	return ch, msgs, nil
 }
 
-func Consumer(cfg *config.Configurations) (<-chan amqp.Delivery, *amqp.Connection, error) {
+func Consumer(ctx context.Context, cfg *config.Configurations) (<-chan amqp.Delivery, *amqp.Connection, error) {
 	conn, err := connectionRabbit(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	_, msgs, err := setupChannel(conn, cfg.Rabbitmq.Topic)
+	_, msgs, err := setupChannel(ctx, conn, cfg.Rabbitmq.Topic)
 	if err != nil {
 		return nil, nil, err
 	}

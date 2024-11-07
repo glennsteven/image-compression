@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/sirupsen/logrus"
-	"github.com/streadway/amqp"
 	"image"
 	"image-compressions/internal/config"
 	"image-compressions/internal/connector"
@@ -75,13 +75,13 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	readFile := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, req.FileName)
 
 	if req.FileName == "" {
-		c.logAndNotifyError(fmt.Sprintf("cannot found image : %v, server config: %s, skip process", req.FileName, cfg.Server.Name))
+		c.logAndNotifyError(fmt.Sprintf("cannot found image: %v, server config: %s, skip process", req.FileName, cfg.Server.Name))
 		return
 	}
 
 	fileBytes, err := c.readFileRetries(readFile)
 	if err != nil {
-		c.logger.Printf("failed to read path file : %v", err)
+		c.logger.Printf("failed to read path file : %v || [filename: %s]", err, req.FileName)
 		c.logAndNotifyError(fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, req.FileName))
 		return
 	}
@@ -94,18 +94,16 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 
 	fileImage, isConv, err := helper.ToJpeg(fileBytes)
 	if err != nil {
-		c.logger.Printf("convert image got error %v", err)
+		c.logger.Printf("convert image got error %v || [filename: %s]", err, req.FileName)
 		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, req.FileName))
 		msg.Nack(false, false)
 		return
 	}
 
-	c.logger.Println("Image conversion successfully!")
-
 	img, _, err := image.Decode(bytes.NewReader(fileImage))
 	if err != nil {
 		c.logger.Printf("Error decoding the image: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error decoding the image: %v", cfg.Server.Name, err))
+		c.logAndNotifyError(fmt.Sprintf("%s-Error decoding the image: %v || [filename: %s]", cfg.Server.Name, err, req.FileName))
 		msg.Nack(false, false)
 		return
 	}
