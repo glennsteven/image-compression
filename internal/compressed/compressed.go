@@ -96,7 +96,6 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	if err != nil {
 		c.logger.Printf("convert image got error %v || [filename: %s]", err, req.FileName)
 		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, req.FileName))
-		msg.Nack(false, false)
 		return
 	}
 
@@ -104,7 +103,6 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 	if err != nil {
 		c.logger.Printf("Error decoding the image: %v", err)
 		c.logAndNotifyError(fmt.Sprintf("%s-Error decoding the image: %v || [filename: %s]", cfg.Server.Name, err, req.FileName))
-		msg.Nack(false, false)
 		return
 	}
 
