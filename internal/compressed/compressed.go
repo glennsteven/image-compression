@@ -12,6 +12,7 @@ import (
 	"image-compressions/internal/connector"
 	"image-compressions/internal/request"
 	"image-compressions/pkg/helper"
+	"image-compressions/pkg/storage"
 	"image/jpeg"
 	"os"
 	"os/signal"
@@ -21,23 +22,19 @@ import (
 	"time"
 )
 
-var backoffSchedule = []time.Duration{
-	1 * time.Second,
-	3 * time.Second,
-	10 * time.Second,
-}
-
 type Consumer struct {
 	logger   *logrus.Logger
 	delivery <-chan amqp.Delivery
 	alerting connector.Alerting
+	aws      storage.Storage
 }
 
-func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery, alerting connector.Alerting) *Consumer {
+func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery, alerting connector.Alerting, aws storage.Storage) *Consumer {
 	return &Consumer{
 		logger:   logger,
 		delivery: delivery,
 		alerting: alerting,
+		aws:      aws,
 	}
 }
 
@@ -53,7 +50,7 @@ func (c *Consumer) Listen(cfg *config.Configurations) {
 		case msg, ok := <-c.delivery:
 			if !ok {
 				c.logger.Printf("consumer is closed")
-				continue
+				break
 			}
 			go c.consume(msg, cfg)
 		}
@@ -72,27 +69,20 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 		return
 	}
 
-	readFile := fmt.Sprintf("%s/%s", cfg.ImageSetting.PathOriginalFile, req.FileName)
-
 	if req.FileName == "" {
 		c.logAndNotifyError(fmt.Sprintf("cannot found image: %v, server config: %s, skip process", req.FileName, cfg.Server.Name))
 		return
 	}
 
-	fileBytes, err := c.readFileRetries(readFile)
+	awsCtx := context.Background()
+	byteImage, err := c.aws.Get(awsCtx, cfg.Aws.Bucket, req.FileName)
 	if err != nil {
-		c.logger.Printf("failed to read path file : %v || [filename: %s]", err, req.FileName)
-		c.logAndNotifyError(fmt.Sprintf("%s-failed to read path file : %v, filename: %s", cfg.Server.Name, err, req.FileName))
+		c.logger.Printf("func aws.Get failed fetch byte from aws: %v, [filename: %s]", err, req.FileName)
+		c.logAndNotifyError(fmt.Sprintf("%s-func aws.Get failed fetch byte from aws : %v, filename: %s", cfg.Server.Name, err, req.FileName))
 		return
 	}
 
-	if len(fileBytes) == 0 {
-		c.logger.Printf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, req.FileName, len(fileBytes))
-		c.logAndNotifyError(fmt.Sprintf("%s-Skip processing file: %s, %v bytes", cfg.Server.Name, req.FileName, len(fileBytes)))
-		return
-	}
-
-	fileImage, isConv, err := helper.ToJpeg(fileBytes)
+	fileImage, isConv, err := helper.ToJpeg(byteImage)
 	if err != nil {
 		c.logger.Printf("convert image got error %v || [filename: %s]", err, req.FileName)
 		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, req.FileName))
@@ -121,28 +111,27 @@ func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
 
 	outputPath = fmt.Sprintf("%s/%s/%s", cfg.ImageSetting.PathCompressed, dirOutput, newPath)
 
-	output, err := os.Create(outputPath)
-	if err != nil {
-		c.logger.Printf("Error creating the output image: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error creating the output image: %v, %s", cfg.Server.Name, err, baseFile))
-		msg.Nack(false, true)
-		return
-	}
-
-	//Todo: Handle unique filename if needed to ensure not replace same filename
+	// Create an in-memory buffer to store the JPEG data
+	var buf bytes.Buffer
 
 	// Encode the image as JPEG with compression options
 	jpegOptions := jpeg.Options{Quality: cfg.ImageSetting.Quality}
 
-	err = jpeg.Encode(output, img, &jpegOptions)
+	err = jpeg.Encode(&buf, img, &jpegOptions)
 	if err != nil {
 		c.logger.Printf("Error encoding the image: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error encoding the image: %v,%v", cfg.Server.Name, err, output))
+		c.logAndNotifyError(fmt.Sprintf("%s-Error encoding the image: %v, %s", cfg.Server.Name, err, req.FileName))
 		msg.Nack(false, true)
 		return
 	}
 
-	output.Close()
+	uploadAws := fmt.Sprintf("%s/%s", dirOutput, newPath)
+	err = c.aws.Put(awsCtx, cfg.Aws.Bucket, uploadAws, buf.Bytes(), req.MimeType)
+	if err != nil {
+		c.logger.Printf("func aws.Put failed upload file: %v", err)
+		c.logAndNotifyError(fmt.Sprintf("%s-Error upload file to aws: %v, %s", cfg.Server.Name, err, req.FileName))
+		return
+	}
 
 	logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
 	logrus.WithFields(logrus.Fields{"server": cfg.Server.Name}).Info("Successfully uploaded file!")
@@ -172,25 +161,4 @@ func checkSubDirectory(subOriInv, subCompInv, subOriAdj, subCompAdj, prefix stri
 		return subCompAdj
 	}
 	return prefix
-}
-
-func (c *Consumer) readFileRetries(url string) (fileBytes []byte, err error) {
-	for _, backoff := range backoffSchedule {
-		fileBytes, err = os.ReadFile(url)
-
-		if err == nil {
-			break
-		}
-
-		c.logger.Printf("Request error: %+v\n", err)
-		c.logger.Printf("Retrying in %v\n", backoff)
-		time.Sleep(backoff)
-	}
-
-	// All retries failed
-	if err != nil {
-		return nil, err
-	}
-
-	return fileBytes, nil
 }
