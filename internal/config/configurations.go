@@ -36,6 +36,13 @@ func Load() (*Configurations, error) {
 		Logger: Logger{
 			Level: v.GetString("LOG_LEVEL"),
 		},
+		Aws: AWS{
+			AccessKey:    v.GetString("AWS_ACCESS_KEY"),
+			AccessSecret: v.GetString("AWS_SECRET_KEY"),
+			Region:       v.GetString("AWS_REGION"),
+			EndPoint:     v.GetString("AWS_ENDPOINT"),
+			Bucket:       v.GetString("AWS_BUCKET"),
+		},
 	}
 
 	return &cfg, err
@@ -47,6 +54,7 @@ type Configurations struct {
 	Server       Server
 	ImageSetting ImageSetting
 	Logger       Logger
+	Aws          AWS
 }
 
 type Rabbitmq struct {
@@ -77,4 +85,12 @@ type ImageSetting struct {
 
 type Logger struct {
 	Level string
+}
+
+type AWS struct {
+	AccessKey    string
+	AccessSecret string
+	Region       string
+	EndPoint     string
+	Bucket       string
 }
