@@ -17,6 +17,7 @@ func Load() (*Configurations, error) {
 			Port:     v.GetString("RABBITMQ_PORT"),
 			Host:     v.GetString("RABBITMQ_HOST"),
 			Topic:    v.GetString("RABBITMQ_TOPIC"),
+			PoolSize: v.GetInt("POOL_SIZE"),
 		},
 		Discord: Discord{
 			Url: v.GetString("URL_BOT_DISCORD"),
@@ -63,6 +64,7 @@ type Rabbitmq struct {
 	Port     string
 	Host     string
 	Topic    string
+	PoolSize int
 }
 
 type Discord struct {

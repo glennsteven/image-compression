@@ -23,7 +23,7 @@ func connectionRabbit(cfg *config.Configurations) (*amqp.Connection, error) {
 	return conn, nil
 }
 
-func StartConsumer(ctx context.Context, cfg *config.Configurations, poolSize int) (<-chan amqp.Delivery, *amqp.Connection, *amqp.Channel, error) {
+func StartConsumer(ctx context.Context, cfg *config.Configurations) (<-chan amqp.Delivery, *amqp.Connection, *amqp.Channel, error) {
 	conn, err := connectionRabbit(cfg)
 	if err != nil {
 		return nil, nil, nil, err
@@ -39,9 +39,9 @@ func StartConsumer(ctx context.Context, cfg *config.Configurations, poolSize int
 	// this tells RabbitMQ to only send `poolSize` messages to this consumer
 	// before waiting for acknowledgement. This prevents our workers from being flooded.
 	err = ch.Qos(
-		poolSize, // prefetchCount: Maximum number of messages sent
-		0,        // prefetchSize: Total message size (0 = infinite)
-		false,    // global: Does this setting apply to all consumers on the channel (false = only for this consumer)
+		cfg.Rabbitmq.PoolSize, // prefetchCount: Maximum number of messages sent
+		0,                     // prefetchSize: Total message size (0 = infinite)
+		false,                 // global: Does this setting apply to all consumers on the channel (false = only for this consumer)
 	)
 	if err != nil {
 		ch.Close()
