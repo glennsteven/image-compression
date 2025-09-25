@@ -14,127 +14,171 @@ import (
 	"image-compressions/pkg/helper"
 	"image-compressions/pkg/storage"
 	"image/jpeg"
+	_ "image/png"
 	"os"
-	"os/signal"
-	"path"
-	"strings"
-	"syscall"
+	"path/filepath"
+	"sync"
 	"time"
 )
 
 type Consumer struct {
 	logger   *logrus.Logger
-	delivery <-chan amqp.Delivery
 	alerting connector.Alerting
 	aws      storage.Storage
+	wg       sync.WaitGroup
+	cfg      *config.Configurations
 }
 
-func NewConsumer(logger *logrus.Logger, delivery <-chan amqp.Delivery, alerting connector.Alerting, aws storage.Storage) *Consumer {
+func NewConsumer(logger *logrus.Logger, alerting connector.Alerting, aws storage.Storage, cfg *config.Configurations) *Consumer {
 	return &Consumer{
 		logger:   logger,
-		delivery: delivery,
 		alerting: alerting,
 		aws:      aws,
+		cfg:      cfg,
 	}
 }
 
-func (c *Consumer) Listen(cfg *config.Configurations) {
-	c.logger.Printf(" [*] Waiting for messages. To exit press CTRL+C \n")
-	shutDownListener := make(chan os.Signal, 1)
-	signal.Notify(shutDownListener, syscall.SIGINT, syscall.SIGTERM)
-	for {
-		select {
-		case sig := <-shutDownListener:
-			c.logger.Printf("shutdown requested signal: %s \n", sig.String())
-			return
-		case msg, ok := <-c.delivery:
-			if !ok {
-				c.logger.Printf("consumer is closed")
-				break
-			}
-			go c.consume(msg, cfg)
-		}
+func (c *Consumer) Listen(ctx context.Context, delivery <-chan amqp.Delivery) {
+	poolSize := 3
+	c.logger.Printf(" [*] Waiting for messages. Start %d worker...", poolSize)
+
+	for i := 0; i < poolSize; i++ {
+		c.wg.Add(1)
+		go c.worker(i+1, delivery)
 	}
+
+	// Wait for the context to complete (e.g., when receiving a shutdown signal)
+	<-ctx.Done()
+	c.logger.Println("Shutdown signal received, waiting for all workers to finish...")
+
+	// Wait for all running workers to complete their tasks
+	c.wg.Wait()
+	c.logger.Println("All workers have quit.")
 }
 
-func (c *Consumer) consume(msg amqp.Delivery, cfg *config.Configurations) {
-	var (
-		outputPath string
-		req        request.ConsumerRequest
-	)
+// worker is a goroutine that will run continuously processing messages.
+func (c *Consumer) worker(id int, delivery <-chan amqp.Delivery) {
+	defer c.wg.Done()
+	logger := c.logger.WithField("worker_id", id)
+	logger.Println("Worker starts")
 
-	err := json.Unmarshal(msg.Body, &req)
-	if err != nil {
-		c.logger.Printf("cannot unmarshal request : %q", err)
+	for msg := range delivery {
+		c.processMessage(logger, msg)
+	}
+
+	logger.Println("Workers quit.")
+}
+
+func (c *Consumer) processMessage(logger *logrus.Entry, msg amqp.Delivery) {
+	var req request.ConsumerRequest
+	if err := json.Unmarshal(msg.Body, &req); err != nil {
+		logger.Errorf("Failed unmarshal request: %v. The message will be discarded.", err)
+		// This message is corrupted, do not requeue it. Nack(requeue=false)
+		_ = msg.Nack(false, false)
 		return
 	}
+
+	// Add context to logger for better tracking
+	logger = logger.WithField("filename", req.FileName)
 
 	if req.FileName == "" {
-		c.logAndNotifyError(fmt.Sprintf("cannot found image: %v, server config: %s, skip process", req.FileName, cfg.Server.Name))
+		logger.Warn("Nama file kosong, pesan dilewati.")
+		// Assume success (Ack) so that the message is not reprocessed.
+		_ = msg.Ack(false)
 		return
 	}
 
-	awsCtx := context.Background()
-	byteImage, err := c.aws.Get(awsCtx, cfg.Aws.Bucket, req.FileName)
+	// Breaking logic into smaller functions
+	err := c.compressAndUpload(logger, &req)
 	if err != nil {
-		c.logger.Printf("func aws.Get failed fetch byte from aws: %v, [filename: %s]", err, req.FileName)
-		c.logAndNotifyError(fmt.Sprintf("%s-func aws.Get failed fetch byte from aws : %v, filename: %s", cfg.Server.Name, err, req.FileName))
+		logger.Errorf("Failed to process image: %v", err)
+		c.logAndNotifyError(fmt.Sprintf("%s - Failed to process file %s: %v", c.cfg.Server.Name, req.FileName, err))
+		// An error occurred, returning the message to the queue for retry (Nack, requeue=true)
+		_ = msg.Nack(false, true)
 		return
 	}
 
+	logger.Info("Image successfully compressed and uploaded")
+
+	// All processes are successful, send acknowledgement (Ack)
+	_ = msg.Ack(false)
+}
+
+func (c *Consumer) compressAndUpload(logger *logrus.Entry, req *request.ConsumerRequest) error {
+	//ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	//defer cancel()
+
+	// TODO: If you have AWS Account, please uncomment this code
+	// 1. Take a picture from S3
+	//byteImage, err := c.aws.Get(ctx, c.cfg.Aws.Bucket, req.FileName)
+	//if err != nil {
+	//	return fmt.Errorf("failed to retrieve from S3: %w", err)
+	//}
+
+	pathFile := fmt.Sprintf("***/original/%s", req.FileName)
+	byteImage, err := os.ReadFile(pathFile)
+	if err != nil {
+		return fmt.Errorf("failed to read local file: %w", err)
+	}
+
+	logger.Info(fmt.Sprintf("Successfully opened local file: %s", pathFile))
+
+	// 2. Convert and Decode
 	fileImage, isConv, err := helper.ToJpeg(byteImage)
 	if err != nil {
-		c.logger.Printf("convert image got error %v || [filename: %s]", err, req.FileName)
-		c.logAndNotifyError(fmt.Sprintf("%s-convert image got error %v, filename %s", cfg.Server.Name, err, req.FileName))
-		return
+		return fmt.Errorf("failed to convert to Jpeg: %w", err)
 	}
-
 	img, _, err := image.Decode(bytes.NewReader(fileImage))
 	if err != nil {
-		c.logger.Printf("Error decoding the image: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error decoding the image: %v || [filename: %s]", cfg.Server.Name, err, req.FileName))
-		return
+		return fmt.Errorf("failed to decode image: %w", err)
 	}
 
-	outputImage := determineOutputImage(req.FileName, isConv)
+	// 3. Tentukan path output
+	outputPath := c.buildOutputPath(req.FileName, isConv)
 
-	baseFile := path.Base(outputImage)
-	prefix := strings.Trim(outputImage, baseFile)
-	newPath := strings.TrimLeft(baseFile, cfg.ImageSetting.PathOriginalFile)
-	dirOutput := checkSubDirectory(
-		cfg.ImageSetting.SubPathOriginalInvtrypht,
-		cfg.ImageSetting.SubPathCompressionInvtrypht,
-		cfg.ImageSetting.SubPathOriginalAdjdmgpht,
-		cfg.ImageSetting.SubPathCompressionAdjdmgpht,
-		prefix,
-	)
-
-	outputPath = fmt.Sprintf("%s/%s/%s", cfg.ImageSetting.PathCompressed, dirOutput, newPath)
-
-	// Create an in-memory buffer to store the JPEG data
+	// 4. Kompres (Encode) gambar
 	var buf bytes.Buffer
-
-	// Encode the image as JPEG with compression options
-	jpegOptions := jpeg.Options{Quality: cfg.ImageSetting.Quality}
-
-	err = jpeg.Encode(&buf, img, &jpegOptions)
-	if err != nil {
-		c.logger.Printf("Error encoding the image: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error encoding the image: %v, %s", cfg.Server.Name, err, req.FileName))
-		msg.Nack(false, true)
-		return
+	jpegOptions := jpeg.Options{Quality: c.cfg.ImageSetting.Quality}
+	if err = jpeg.Encode(&buf, img, &jpegOptions); err != nil {
+		return fmt.Errorf("failed to encode image: %w", err)
 	}
 
-	uploadAws := fmt.Sprintf("%s/%s", dirOutput, newPath)
-	err = c.aws.Put(awsCtx, cfg.Aws.Bucket, uploadAws, buf.Bytes(), req.MimeType)
-	if err != nil {
-		c.logger.Printf("func aws.Put failed upload file: %v", err)
-		c.logAndNotifyError(fmt.Sprintf("%s-Error upload file to aws: %v, %s", cfg.Server.Name, err, req.FileName))
-		return
+	// TODO: If you have AWS Account, please uncomment this code
+	// 5. Upload to S3
+	//uploadPath := strings.TrimPrefix(outputPath, c.cfg.ImageSetting.PathCompressed+"/")
+	//if err = c.aws.Put(ctx, c.cfg.Aws.Bucket, uploadPath, buf.Bytes(), req.MimeType); err != nil {
+	//	return fmt.Errorf("failed to upload to S3: %w", err)
+	//}
+
+	fullPath := filepath.Join(outputPath)
+	if err := os.MkdirAll(filepath.Dir(fullPath), os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create folder: %w", err)
 	}
 
-	logrus.Infof("%s-Image compressed and saved in %s\n", cfg.Server.Name, outputPath)
-	logrus.WithFields(logrus.Fields{"server": cfg.Server.Name}).Info("Successfully uploaded file!")
+	// write file
+	if err := os.WriteFile(fullPath, buf.Bytes(), 0644); err != nil {
+		return fmt.Errorf("failed to write local file: %w", err)
+	}
+
+	return nil
+}
+
+// buildOutputPath is a helper for building output file paths.
+func (c *Consumer) buildOutputPath(fileName string, isConv bool) string {
+	//outputImage := determineOutputImage(fileName, isConv)
+	//baseFile := path.Base(outputImage)
+	//prefix := strings.TrimSuffix(outputImage, baseFile)
+	//newPath := strings.TrimPrefix(baseFile, c.cfg.ImageSetting.PathOriginalFile)
+	//
+	//dirOutput := checkSubDirectory(
+	//	c.cfg.ImageSetting.SubPathOriginalInvtrypht,
+	//	c.cfg.ImageSetting.SubPathCompressionInvtrypht,
+	//	c.cfg.ImageSetting.SubPathOriginalAdjdmgpht,
+	//	c.cfg.ImageSetting.SubPathCompressionAdjdmgpht,
+	//	prefix,
+	//)
+
+	return fmt.Sprintf("****/result/%s", fileName)
 }
 
 func (c *Consumer) logAndNotifyError(text string) {
