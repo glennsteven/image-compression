@@ -87,8 +87,7 @@ func (c *Consumer) processMessage(logger *logrus.Entry, msg amqp.Delivery) {
 		_ = msg.Ack(false)
 		return
 	}
-
-	// Breaking logic into smaller functions
+	
 	err := c.compressAndUpload(logger, &req)
 	if err != nil {
 		logger.Errorf("Failed to process image: %v", err)
