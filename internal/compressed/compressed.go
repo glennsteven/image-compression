@@ -39,7 +39,7 @@ func NewConsumer(logger *logrus.Logger, alerting connector.Alerting, aws storage
 }
 
 func (c *Consumer) Listen(ctx context.Context, delivery <-chan amqp.Delivery) {
-	poolSize := 3
+	poolSize := c.cfg.Rabbitmq.PoolSize
 	c.logger.Printf(" [*] Waiting for messages. Start %d worker...", poolSize)
 
 	for i := 0; i < poolSize; i++ {
@@ -128,15 +128,16 @@ func (c *Consumer) compressAndUpload(logger *logrus.Entry, req *request.Consumer
 	if err != nil {
 		return fmt.Errorf("failed to convert to Jpeg: %w", err)
 	}
+
 	img, _, err := image.Decode(bytes.NewReader(fileImage))
 	if err != nil {
 		return fmt.Errorf("failed to decode image: %w", err)
 	}
 
-	// 3. Tentukan path output
+	// 3. Determine the output path
 	outputPath := c.buildOutputPath(req.FileName, isConv)
 
-	// 4. Kompres (Encode) gambar
+	// 4. Compressed (Encode) Image
 	var buf bytes.Buffer
 	jpegOptions := jpeg.Options{Quality: c.cfg.ImageSetting.Quality}
 	if err = jpeg.Encode(&buf, img, &jpegOptions); err != nil {

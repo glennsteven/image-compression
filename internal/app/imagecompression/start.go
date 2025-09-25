@@ -60,8 +60,7 @@ func Start() error {
 
 	consumerService := compressed.NewConsumer(logger, alerting, awsClient, cfg)
 
-	poolSize := 3
-	delivery, conn, ch, err := rabbitmq.StartConsumer(ctx, cfg, poolSize)
+	delivery, conn, ch, err := rabbitmq.StartConsumer(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("consumer rabbitmq gagal berjalan: %w", err)
 	}
