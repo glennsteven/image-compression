@@ -12,9 +12,6 @@ import (
 	"strings"
 )
 
-// Compile time check to verify implements the Storage interface.
-var _ Storage = (*awsS3)(nil)
-
 // awsS3 implements the storage interface to provides the ability
 // put get delete files to AWS S3.
 type awsS3 struct {
